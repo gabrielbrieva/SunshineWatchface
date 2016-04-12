@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_interactive_mode">#1ca7f3</color>
+    <color name="text">#ffffff</color>
+    <color name="text_gray">#aaffffff</color>
+</resources>
