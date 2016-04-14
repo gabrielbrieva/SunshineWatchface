@@ -1,15 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <dimen name="digital_y_offset">80dp</dimen>
     <dimen name="digital_text_size">40dp</dimen>
     <dimen name="digital_text_size_round">45dp</dimen>
-    <dimen name="digital_y_offset">90dp</dimen>
 
+    <dimen name="date_y_offset">110dp</dimen>
     <dimen name="date_text_size">12dp</dimen>
     <dimen name="date_text_size_round">17dp</dimen>
-    <dimen name="date_y_offset">120dp</dimen>
 
-    <dimen name="separator_y_offset">20dp</dimen><!-- from screen center -->
+    <dimen name="separator_y_offset">15dp</dimen><!-- from screen center -->
     <dimen name="separator_width">40dp</dimen>
 
-    <dimen name="weather_y_offset">40dp</dimen>
+    <dimen name="forecast_y_offset">155dp</dimen>
+    <dimen name="forecast_text_size">25dp</dimen>
+    <dimen name="forecast_text_size_round">30dp</dimen>
+    <dimen name="forecast_icon_width">20dp</dimen>
+    <dimen name="forecast_icon_height">20dp</dimen>
 </resources>
