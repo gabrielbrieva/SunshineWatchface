@@ -23,22 +23,30 @@ import android.support.wearable.watchface.CanvasWatchFaceService;
 import android.support.wearable.watchface.WatchFaceStyle;
 import android.text.format.Time;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
 import com.google.android.gms.wearable.Asset;
+import com.google.android.gms.wearable.CapabilityApi;
+import com.google.android.gms.wearable.CapabilityInfo;
 import com.google.android.gms.wearable.DataApi;
 import com.google.android.gms.wearable.DataEvent;
 import com.google.android.gms.wearable.DataEventBuffer;
 import com.google.android.gms.wearable.DataItem;
 import com.google.android.gms.wearable.DataMap;
 import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.Node;
 import com.google.android.gms.wearable.Wearable;
 
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
+import java.util.Calendar;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
@@ -50,10 +58,14 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
 
     private static final String LOG_TAG = "SunshineWatchFaceSrv";
 
+    private static final String FORECAST_REQUEST_PATH = "/forecastRequest";
     private static final String FORECAST_PATH = "/forecast";
     private static final String FORECAST_HIGH_KEY = "FORECAST_HIGH_KEY";
     private static final String FORECAST_LOW_KEY = "FORECAST_LOW_KEY";
     private static final String FORECAST_ICON_KEY = "FORECAST_ICON_KEY";
+    private static final String FORECAST_DATE_KEY = "FORECAST_DATE_KEY";
+    private static final String FORECAST_CAPABILITY_NAME = "sync_forecast_data";
+
 
     private static final Typeface NORMAL_TYPEFACE = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
 
@@ -95,7 +107,7 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
 
     private class Engine extends CanvasWatchFaceService.Engine implements
             DataApi.DataListener, GoogleApiClient.ConnectionCallbacks,
-            GoogleApiClient.OnConnectionFailedListener {
+            GoogleApiClient.OnConnectionFailedListener, CapabilityApi.CapabilityListener {
 
         final Handler mUpdateTimeHandler = new EngineHandler(this);
 
@@ -105,9 +117,12 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
                 .addOnConnectionFailedListener(this)
                 .build();
 
+        private String mForecastNodeId = null;
         private String mForecastHigh;
         private String mForecastLow;
         private Bitmap mForecastIcon;
+        private Time mForecastTime;
+        private boolean mForecastRequestingData = false;
 
         boolean mRegisteredTimeZoneReceiver = false;
 
@@ -115,7 +130,8 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
         Paint mTimePaint;
         Paint mDatePaint;
         Paint mForecastPaint;
-        Paint mLineSeparatorPaint;
+
+        float mForecastIconSize;
 
         boolean mAmbient;
 
@@ -128,9 +144,7 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
             }
         };
 
-        float mDigitalYOffset;
-        float mDateYOffset;
-        float mForecastYOffset;
+        private final int drawMargin = 10;
 
         /**
          * Whether the display supports fewer bits for each color in ambient mode. When true, we
@@ -145,23 +159,22 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
             setWatchFaceStyle(new WatchFaceStyle.Builder(SunshineWatchFaceService.this)
                     .setCardPeekMode(WatchFaceStyle.PEEK_MODE_VARIABLE)
                     .setBackgroundVisibility(WatchFaceStyle.BACKGROUND_VISIBILITY_INTERRUPTIVE)
+                    .setHotwordIndicatorGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL)
+                    .setStatusBarGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL)
                     .setShowSystemUiTime(false)
+                    //.setViewProtectionMode(WatchFaceStyle.PROTECT_STATUS_BAR | WatchFaceStyle.PROTECT_HOTWORD_INDICATOR)
                     .build());
 
             Resources resources = SunshineWatchFaceService.this.getResources();
-            mDigitalYOffset = resources.getDimension(R.dimen.digital_y_offset);
-            mDateYOffset = resources.getDimension(R.dimen.date_y_offset);
-            mForecastYOffset = resources.getDimension(R.dimen.forecast_y_offset);
 
             mBackgroundPaint = new Paint();
             mBackgroundPaint.setColor(resources.getColor(R.color.bg_interactive_mode));
 
             mTimePaint = createTextPaint(R.color.text);
             mDatePaint = createTextPaint(R.color.text_gray);
-            mForecastPaint = createTextPaint(R.color.text);
+            mForecastPaint = createTextPaint(R.color.text_gray);
 
-            mLineSeparatorPaint = new Paint();
-            mLineSeparatorPaint.setColor(resources.getColor(R.color.text_gray));
+            mForecastIconSize = resources.getDimension(R.dimen.forecast_icon_size);
 
             mTime = new Time();
         }
@@ -188,6 +201,23 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
 
                 mGoogleApiClient.connect();
 
+                // register change capability listener to find best node to get forecast data
+                Wearable.CapabilityApi.addCapabilityListener(
+                        mGoogleApiClient,
+                        this,
+                        FORECAST_CAPABILITY_NAME);
+
+                // ask for nodes with "sync_forecast_data" capabilities
+                Wearable.CapabilityApi.getCapability(mGoogleApiClient,
+                        FORECAST_CAPABILITY_NAME, CapabilityApi.FILTER_REACHABLE)
+                        .setResultCallback(new ResultCallback<CapabilityApi.GetCapabilityResult>() {
+                            @Override
+                            public void onResult(@NonNull CapabilityApi.GetCapabilityResult getCapabilityResult) {
+                                if (getCapabilityResult.getStatus().isSuccess())
+                                    updateForecastCapability(getCapabilityResult.getCapability());
+                            }
+                });
+
                 registerReceiver();
 
                 // Update time zone in case it changed while we weren't visible.
@@ -197,8 +227,13 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
                 unregisterReceiver();
 
                 if (mGoogleApiClient != null && mGoogleApiClient.isConnected()) {
+
+                    // remove listeners
                     Wearable.DataApi.removeListener(mGoogleApiClient, this);
+                    Wearable.CapabilityApi.removeCapabilityListener(mGoogleApiClient, this, FORECAST_CAPABILITY_NAME);
+
                     mGoogleApiClient.disconnect();
+
                     Log.d(LOG_TAG, "GoogleAPIClient disconnected...");
                 }
             }
@@ -241,6 +276,7 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
 
             mForecastPaint.setTextSize(resources.getDimension(isRound
                     ? R.dimen.forecast_text_size_round : R.dimen.forecast_text_size));
+
         }
 
         @Override
@@ -263,6 +299,7 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
                 if (mLowBitAmbient) {
                     mTimePaint.setAntiAlias(!inAmbientMode);
                     mDatePaint.setAntiAlias(!inAmbientMode);
+                    mForecastPaint.setAntiAlias(!inAmbientMode);
                 }
                 invalidate();
             }
@@ -284,21 +321,39 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
             // Draw HH:MM.
             mTime.setToNow();
             String text = String.format("%02d:%02d", mTime.hour, mTime.minute);
-            canvas.drawText(text, bounds.centerX() - (mTimePaint.measureText(text)/2), mDigitalYOffset, mTimePaint);
+            Rect timeBounds = new Rect();
+            mTimePaint.getTextBounds(text, 0, text.length(), timeBounds);
+            int timeYOffset = timeBounds.height() / 2;
+            canvas.drawText(text, bounds.centerX() - (timeBounds.width() / 2),
+                    bounds.centerY() + timeYOffset, mTimePaint);
 
             text = mTime.format("%a, %b %d %G").replace(".", "");
-            canvas.drawText(text, bounds.centerX() - (mDatePaint.measureText(text)/2), mDateYOffset, mDatePaint);
+            Rect dateBounds = new Rect();
+            mDatePaint.getTextBounds(text, 0, text.length(), dateBounds);
+            int dateYOffset = (dateBounds.height() / 2) + drawMargin;
+            canvas.drawText(text, bounds.centerX() - (dateBounds.width() / 2),
+                    bounds.centerY() - dateYOffset - timeYOffset, mDatePaint);
 
-            canvas.drawLine(bounds.centerX() - (getResources().getDimensionPixelSize(R.dimen.separator_width) / 2), bounds.centerY() + getResources().getDimensionPixelSize(R.dimen.separator_y_offset),
-                    bounds.centerX() + (getResources().getDimensionPixelSize(R.dimen.separator_width) / 2), bounds.centerY() + getResources().getDimensionPixelSize(R.dimen.separator_y_offset), mLineSeparatorPaint);
+            // if the last forecast sent by Sunshine App is delayed by more than one day
+            // we request forecast again
+            if (mTime != null && mForecastTime != null && mTime.yearDay != mForecastTime.yearDay) {
+                requestForecast(null);
+            }
 
             if (mForecastLow != null && mForecastHigh != null) {
                 text = mForecastHigh + " " + mForecastLow;
-                canvas.drawText(text, bounds.centerX() - (mForecastPaint.measureText(text) / 2), mForecastYOffset, mForecastPaint);
-            }
+                Rect forecastBounds = new Rect();
+                mForecastPaint.getTextBounds(text, 0, text.length(), forecastBounds);
+                int forecastYOffset = forecastBounds.height() + drawMargin;
+                canvas.drawText(text, bounds.centerX() - (forecastBounds.width() / 2),
+                        bounds.centerY() + forecastYOffset + timeYOffset, mForecastPaint);
 
-            if (mForecastIcon != null) {
-                canvas.drawBitmap(mForecastIcon, bounds.centerX(), bounds.centerY(), mForecastPaint);
+
+                if (mForecastIcon != null && !mAmbient) {
+                    canvas.drawBitmap(mForecastIcon, bounds.centerX() - (mForecastIconSize / 2),
+                            bounds.centerY() + drawMargin + forecastYOffset + timeYOffset, mForecastPaint);
+                }
+
             }
         }
 
@@ -361,13 +416,20 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
                     mForecastHigh = dataMap.getString(FORECAST_HIGH_KEY);
                     mForecastLow = dataMap.getString(FORECAST_LOW_KEY);
 
-                    new LoadBitmapAsyncTask().execute(dataMap.getAsset(FORECAST_ICON_KEY));
+                    Calendar c = Calendar.getInstance();
+                    c.setTimeInMillis(dataMap.getLong(FORECAST_DATE_KEY));
+
+                    Time t = new Time(mTime.timezone);
+
+                    Asset forecastIcon = dataMap.getAsset(FORECAST_ICON_KEY);
+
+                    if (forecastIcon != null)
+                        new LoadBitmapAsyncTask().execute(forecastIcon);
 
                     Log.d(LOG_TAG, "High: " + mForecastHigh + ", Low: " + mForecastLow);
                 }
             }
         }
-
 
         private class LoadBitmapAsyncTask extends AsyncTask<Asset, Void, Bitmap> {
 
@@ -399,10 +461,58 @@ public class SunshineWatchFaceService extends CanvasWatchFaceService {
                 if (bitmap != null) {
                     mForecastIcon = Bitmap.createScaledBitmap(
                             bitmap,
-                            getResources().getDimensionPixelSize(R.dimen.forecast_icon_width),
-                            getResources().getDimensionPixelSize(R.dimen.forecast_icon_height),
-                            false);
+                            getResources().getDimensionPixelSize(R.dimen.forecast_icon_size),
+                            getResources().getDimensionPixelSize(R.dimen.forecast_icon_size),
+                            true);
                 }
+            }
+        }
+
+        @Override
+        public void onCapabilityChanged(CapabilityInfo capabilityInfo) {
+            updateForecastCapability(capabilityInfo);
+        }
+
+        private void updateForecastCapability(CapabilityInfo capabilityInfo) {
+            Set<Node> connectedNodes = capabilityInfo.getNodes();
+            mForecastNodeId = pickBestNodeId(connectedNodes);
+
+            requestForecast(null);
+        }
+
+        private String pickBestNodeId(Set<Node> nodes) {
+            String bestNodeId = null;
+            // Find a nearby node or pick one arbitrarily
+            for (Node node : nodes) {
+                if (node.isNearby()) {
+                    return node.getId();
+                }
+                bestNodeId = node.getId();
+            }
+            return bestNodeId;
+        }
+
+        private void requestForecast(byte[] data) {
+            if (mForecastNodeId != null && !mForecastRequestingData) {
+
+                mForecastRequestingData = true;
+
+                Wearable.MessageApi.sendMessage(mGoogleApiClient, mForecastNodeId, FORECAST_REQUEST_PATH, data)
+                        .setResultCallback( new ResultCallback<MessageApi.SendMessageResult>() {
+                                @Override
+                                public void onResult(MessageApi.SendMessageResult sendMessageResult) {
+                                    if (!sendMessageResult.getStatus().isSuccess()) {
+                                        Log.d(LOG_TAG, "message not sent :(");
+                                    } else {
+                                        Log.d(LOG_TAG, "message sent :)");
+                                    }
+
+                                    mForecastRequestingData = false;
+                                }
+                            }
+                        );
+            } else {
+                //Log.d(LOG_TAG, "Unable to retrieve node with sync forecast data capability :(");
             }
         }
     }
